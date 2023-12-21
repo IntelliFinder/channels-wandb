@@ -209,7 +209,7 @@ class E_GCL(nn.Module):
         #    self.gru = nn.GRUCell(hidden_nf, hidden_nf)
 
 
-    def edge_model(self, source, target, radial, wl_colors,edge_attr):
+    def edge_model(self, source, target, radial, wl_colors, edge_attr):
         if edge_attr is None:  # Unused.
             out = torch.cat([source, target, radial, wl_colors], dim=1)
         else:
@@ -287,14 +287,16 @@ class E_GCL_vel(E_GCL):
 
     def __init__(self, input_nf, output_nf, hidden_edge_nf, hidden_node_nf, hidden_coord_nf,
                  edges_in_d=0, nodes_att_dim=0, act_fn=nn.ReLU(), recurrent=True, coords_weight=1.0,
-                 attention=False, norm_diff=False, tanh=False, num_vectors_in=1, num_vectors_out=1, last_layer=False, color_steps=2, ef_dim=3):
+                 attention=False, norm_diff=False, tanh=False, num_vectors_in=1, num_vectors_out=1, last_layer=False, color_steps=2, ef_dim=3, mixed=False,  shared_wl=False, init_color=None, init_color_mixed=None, init_color_mixed_first=None, interaction_layers=None):
         E_GCL.__init__(self, input_nf, output_nf, hidden_edge_nf, hidden_node_nf, hidden_coord_nf,
                        edges_in_d=edges_in_d, nodes_att_dim=nodes_att_dim, act_fn=act_fn, recurrent=recurrent,
                        coords_weight=coords_weight, attention=attention, norm_diff=norm_diff, tanh=tanh,
                        num_vectors_in=num_vectors_in, num_vectors_out=num_vectors_out, last_layer=last_layer)
+        self.shared_wl      = shared_wl
         self.num_vectors_in = num_vectors_in
-        self.norm_diff = norm_diff
-        self.coord_mlp_vel = nn.Sequential(
+        self.norm_diff      = norm_diff
+        self.mixed          = mixed
+        self.coord_mlp_vel  = nn.Sequential(
             nn.Linear(input_nf, hidden_coord_nf),
             act_fn,
             nn.Linear(hidden_coord_nf, num_vectors_in * num_vectors_out))
@@ -304,26 +306,36 @@ class E_GCL_vel(E_GCL):
             nn.Linear(hidden_edge_nf, hidden_edge_nf),
             act_fn)
             
-        rbound_upper = 10
-        hidden_nf = hidden_edge_nf
-        self.color_steps=color_steps
+        rbound_upper                = 10
+        hidden_nf                   = hidden_edge_nf
+        self.color_steps            = color_steps
         self.ef_dim=ef_dim
-        self.init_color = TwoFDisInit(ef_dim=ef_dim, k_tuple_dim=hidden_nf, activation_fn=act_fn)
+        if shared_wl:
+            self.init_color         = init_color
+            self.init_color_mixed   = init_color_mixed
+            if (num_vectors_in == 1):
+              self.init_color_mixed = init_color_mixed_first
+            self.interaction_layers = interaction_layers
+        else:
+            self.init_color = TwoFDisInit(ef_dim=ef_dim, k_tuple_dim=hidden_nf, activation_fn=act_fn)
+            self.init_color_mixed = TwoFDisInit(ef_dim=ef_dim*(num_vectors_in)**2 , k_tuple_dim=hidden_nf, activation_fn=act_fn)
+            # interaction layers
+            self.interaction_layers = nn.ModuleList()
+            for _ in range(color_steps):
+                self.interaction_layers.append(
+                        TwoFDisLayer(
+                            hidden_dim=hidden_nf,
+                            activation_fn=act_fn,
+                            )
+                        )
+
         self.rbf_fn = rbf_class_mapping["nexpnorm"](
                     num_rbf=ef_dim, 
                     rbound_upper=rbound_upper, 
                     rbf_trainable=False,
                 )
                 
-        # interaction layers
-        self.interaction_layers = nn.ModuleList()
-        for _ in range(color_steps):
-            self.interaction_layers.append(
-                    TwoFDisLayer(
-                        hidden_dim=hidden_nf,
-                        activation_fn=act_fn,
-                        )
-                    )
+        
     def wl(self, edge_index, clouds: list=[]):
         row, col = edge_index
         #return to reg shape and create three lists of index list to query result from wl
@@ -354,8 +366,34 @@ class E_GCL_vel(E_GCL):
         colors = self.color_mlp(colors) 
         
         #apply function
-        return  colors            
-
+        return  colors  
+                  
+    def wl_mixed(self, edge_index, clouds: list=[]):
+        row, col = edge_index
+        #return to reg shape and create three lists of index list to query result from wl
+        batch   = torch.floor_divide(row, 5)
+        rowidx  = torch.remainder(row, 5)
+        colidx  = torch.remainder(col, 5)
+        colors  = []
+        B = clouds[0].size(0) // 5
+        for i in range(len(clouds)):
+            for j in range(len(clouds)):
+                # apply WL to batch
+                coord1 = clouds[i].reshape(B, 5, 3)
+                coord2 = clouds[j].reshape(B, 5, 3)
+                coord_dist = coord1.unsqueeze(2) - coord2.unsqueeze(1) # (B, N, N, 3)
+                coord_dist = torch.norm(coord_dist.clone(), dim=-1, keepdim=True) # (B, N, N, 1)
+                rbf_coord_dist = self.rbf_fn(coord_dist.reshape(-1, 1)).reshape(B, 5, 5,self.ef_dim) # (B, N, N, ef_dim)
+                colors.append(rbf_coord_dist)
+  
+        colors = torch.cat(colors, dim=-1)
+        kemb = self.init_color_mixed(colors) 
+        for i in range(self.color_steps):
+            kemb += self.interaction_layers[i](
+                        kemb=kemb.clone(),
+                        )   # (B, N ,N, hidden_nf)
+        #apply function
+        return  kemb[batch, rowidx, colidx]            
 
     def forward(self, h, edge_index, coord, vel, edge_attr=None, node_attr=None):
         row, col = edge_index
@@ -364,8 +402,11 @@ class E_GCL_vel(E_GCL):
           clouds = [ coord_diff[:,:, i] for i in range(self.num_vectors_in)]
         else:
           clouds = [coord_diff]
-        wl_edge_feat = self.wl(edge_index, clouds)
-        edge_feat = self.edge_model(h[row], h[col], radial, wl_edge_feat,edge_attr)
+        if self.mixed:
+            wl_edge_feat = self.wl_mixed(edge_index, clouds) 
+        else:
+            wl_edge_feat = self.wl(edge_index, clouds)
+        edge_feat = self.edge_model(h[row], h[col], radial, wl_edge_feat, edge_attr)
         coord = self.coord_model(coord, edge_index, coord_diff, radial, edge_feat)
 
         coord_vel_matrix = self.coord_mlp_vel(h).view(-1, self.num_vectors_in, self.num_vectors_out)

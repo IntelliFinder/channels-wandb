@@ -54,7 +54,7 @@ python -u generate_dataset.py --num-train 10000 --seed 43 --sufix small
 
 *EGNN model*  
 ```
-python -u main_nbody.py --exp_name exp_1_egnn_vel --model egnn_vel --max_training_samples 3000 --lr 5e-4
+python -u main_nbody.py --exp_name exp_1_egnn_vel --model egnn_vel --max_training_samples 3000 --lr 5e-4 --nf 128 --ef 9 --shared True --mixed True --silu True  --count 5
 ```
   
 

@@ -79,6 +79,10 @@ parser.add_argument('--silu', type=eval, default=False, metavar='N',
                     help='use edge hidden state message passing')               
 parser.add_argument('--ef_dim', type=int, default=3, metavar='N',
                     help='hidden features for node mlp')
+parser.add_argument('--mixed', type=eval, default=False, metavar='N',
+                    help='use edge hidden state message passing')
+parser.add_argument('--shared_wl', type=eval, default=False, metavar='N',
+                    help='use edge hidden state message passing')
 time_exp_dic = {'time': 0, 'counter': 0}
 
 
@@ -117,8 +121,8 @@ sweep_configuration = {
     "metric": {"goal": "minimize", "name": "val/loss"},
     "parameters": {
         "hidden": {"values": [args.nf]},
-        "lr": {"min" : args.lr/2, "max" : args.lr},
-        "num_vectors" : {"values": [2, 3]}
+        "lr": {"values": [args.lr]},
+        "num_vectors" : {"values": [ args.num_vectors]}
     },
 }
 # Initialize sweep by passing in config.
@@ -147,7 +151,7 @@ def main():
     elif args.model == 'egnn_vel':
         model = EGNN_vel(in_node_nf=1, in_edge_nf=2, hidden_edge_nf=config.hidden, 
                          hidden_node_nf=config.hidden, hidden_coord_nf=config.hidden,device=device, n_layers=args.n_layers,
-                         recurrent=True, norm_diff=args.norm_diff, tanh=args.tanh, num_vectors=config.num_vectors, update_vel=args.update_vel, ef_dim=args.ef_dim, color_steps=args.color_steps)
+                         recurrent=True, norm_diff=args.norm_diff, tanh=args.tanh, num_vectors=config.num_vectors, update_vel=args.update_vel, ef_dim=args.ef_dim, color_steps=args.color_steps, mixed=args.mixed, shared_wl=args.shared_wl)
     elif args.model == 'baseline':
         model = Baseline()
     elif args.model == 'linear_vel':
