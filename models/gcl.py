@@ -160,7 +160,7 @@ class E_GCL(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_edge_nf, hidden_node_nf, hidden_coord_nf,edges_in_d=0,
                 nodes_att_dim=0, act_fn=nn.ReLU(),recurrent=True, coords_weight=1.0,
                 attention=False, clamp=False, norm_diff=False, tanh=False,
-                num_vectors_in=1, num_vectors_out=1, last_layer=False):
+                num_vectors_in=1, num_vectors_out=1, last_layer=False, wl_dim=32):
         super(E_GCL, self).__init__()
         input_edge = input_nf * 2
         self.coords_weight = coords_weight
@@ -172,14 +172,25 @@ class E_GCL(nn.Module):
         self.num_vectors_out = num_vectors_out
         self.last_layer = last_layer
         edge_coords_nf = 1
+        wl_diff = (wl_dim != hidden_edge_nf)
 
-
+        print((1-int(wl_diff))*hidden_edge_nf + int(wl_diff)*wl_dim)
+        print(int(wl_diff)*wl_dim)
+        #import sys
+        #sys.exit("printed wl dim true/false")
         self.edge_mlp = nn.Sequential(
-            nn.Linear(input_edge + num_vectors_in + edges_in_d + hidden_edge_nf, hidden_edge_nf),
+            nn.Linear(input_edge + num_vectors_in + edges_in_d + (1-int(wl_diff))*hidden_edge_nf + int(wl_diff)*wl_dim, hidden_edge_nf),
             act_fn,
             nn.Linear(hidden_edge_nf, hidden_edge_nf),
             act_fn)
-            
+        print(self.edge_mlp)
+        
+        self.edge_mlp_prop = nn.Sequential(
+            nn.Linear(input_edge + num_vectors_in + edges_in_d + 2*(1-int(wl_diff))*hidden_edge_nf + 2*int(wl_diff)*wl_dim, hidden_edge_nf),
+            act_fn,
+            nn.Linear(hidden_edge_nf, hidden_edge_nf),
+            act_fn)
+        print(self.edge_mlp)
             
         self.node_mlp = nn.Sequential(
             nn.Linear(hidden_edge_nf + input_nf + nodes_att_dim, hidden_node_nf),
@@ -215,6 +226,17 @@ class E_GCL(nn.Module):
         else:
             out = torch.cat([source, target, radial, wl_colors, edge_attr], dim=1)
         out = self.edge_mlp(out)
+        if self.attention:
+            att_val = self.att_mlp(out)
+            out = out * att_val
+        return out
+        
+    def edge_model_prop(self, source, target, radial, wl_colors, prev_colors, edge_attr):
+        if edge_attr is None:  # Unused.
+            out = torch.cat([source, target, radial, wl_colors, prev_colors], dim=1)
+        else:
+            out = torch.cat([source, target, radial, wl_colors, prev_colors, edge_attr], dim=1)
+        out = self.edge_mlp_prop(out)
         if self.attention:
             att_val = self.att_mlp(out)
             out = out * att_val
@@ -287,15 +309,16 @@ class E_GCL_vel(E_GCL):
 
     def __init__(self, input_nf, output_nf, hidden_edge_nf, hidden_node_nf, hidden_coord_nf,
                  edges_in_d=0, nodes_att_dim=0, act_fn=nn.ReLU(), recurrent=True, coords_weight=1.0,
-                 attention=False, norm_diff=False, tanh=False, num_vectors_in=1, num_vectors_out=1, last_layer=False, color_steps=2, ef_dim=3, mixed=False,  shared_wl=False, init_color=None, init_color_mixed=None, init_color_mixed_first=None, interaction_layers=None):
+                 attention=False, norm_diff=False, tanh=False, num_vectors_in=1, num_vectors_out=1, last_layer=False, color_steps=2, ef_dim=3, mixed=False,  shared_wl=False, init_color=None, init_color_mixed=None, init_color_mixed_first=None, interaction_layers=None, wl_dim=64, prop=False):
         E_GCL.__init__(self, input_nf, output_nf, hidden_edge_nf, hidden_node_nf, hidden_coord_nf,
                        edges_in_d=edges_in_d, nodes_att_dim=nodes_att_dim, act_fn=act_fn, recurrent=recurrent,
                        coords_weight=coords_weight, attention=attention, norm_diff=norm_diff, tanh=tanh,
-                       num_vectors_in=num_vectors_in, num_vectors_out=num_vectors_out, last_layer=last_layer)
+                       num_vectors_in=num_vectors_in, num_vectors_out=num_vectors_out, last_layer=last_layer, wl_dim=wl_dim)
         self.shared_wl      = shared_wl
         self.num_vectors_in = num_vectors_in
         self.norm_diff      = norm_diff
         self.mixed          = mixed
+        self.prop           = prop
         self.coord_mlp_vel  = nn.Sequential(
             nn.Linear(input_nf, hidden_coord_nf),
             act_fn,
@@ -317,14 +340,14 @@ class E_GCL_vel(E_GCL):
               self.init_color_mixed = init_color_mixed_first
             self.interaction_layers = interaction_layers
         else:
-            self.init_color = TwoFDisInit(ef_dim=ef_dim, k_tuple_dim=hidden_nf, activation_fn=act_fn)
-            self.init_color_mixed = TwoFDisInit(ef_dim=ef_dim*(num_vectors_in)**2 , k_tuple_dim=hidden_nf, activation_fn=act_fn)
+            self.init_color = TwoFDisInit(ef_dim=ef_dim, k_tuple_dim=wl_dim, activation_fn=act_fn)
+            self.init_color_mixed = TwoFDisInit(ef_dim=ef_dim*(num_vectors_in)**2 , k_tuple_dim=wl_dim, activation_fn=act_fn)
             # interaction layers
             self.interaction_layers = nn.ModuleList()
             for _ in range(color_steps):
                 self.interaction_layers.append(
                         TwoFDisLayer(
-                            hidden_dim=hidden_nf,
+                            hidden_dim=wl_dim,
                             activation_fn=act_fn,
                             )
                         )
@@ -393,9 +416,10 @@ class E_GCL_vel(E_GCL):
                         kemb=kemb.clone(),
                         )   # (B, N ,N, hidden_nf)
         #apply function
-        return  kemb[batch, rowidx, colidx]            
+        return  kemb[batch, rowidx, colidx]  
+           
 
-    def forward(self, h, edge_index, coord, vel, edge_attr=None, node_attr=None):
+    def forward(self, h, edge_index, coord, vel, wl_edge_feat_prop=None, edge_attr=None, node_attr=None):
         row, col = edge_index
         radial, coord_diff = self.coord2radial(edge_index, coord)
         if coord_diff.dim() > 2:
@@ -407,6 +431,8 @@ class E_GCL_vel(E_GCL):
         else:
             wl_edge_feat = self.wl(edge_index, clouds)
         edge_feat = self.edge_model(h[row], h[col], radial, wl_edge_feat, edge_attr)
+        if self.prop and wl_edge_feat_prop!=None:
+          edge_feat = self.edge_model_prop(h[row], h[col], radial, wl_edge_feat, wl_edge_feat_prop, edge_attr)
         coord = self.coord_model(coord, edge_index, coord_diff, radial, edge_feat)
 
         coord_vel_matrix = self.coord_mlp_vel(h).view(-1, self.num_vectors_in, self.num_vectors_out)
@@ -416,7 +442,7 @@ class E_GCL_vel(E_GCL):
         h, agg = self.node_model(h, edge_index, edge_feat, node_attr)
         # coord = self.node_coord_model(h, coord)
         # x = self.node_model(x, edge_index, x[col], u, batch)  # GCN
-        return h, coord, edge_attr, vel
+        return h, coord, edge_attr, vel, wl_edge_feat
  
 class GCL_rf_vel(nn.Module):
     """Graph Neural Net with global state and fixed number of nodes per graph.

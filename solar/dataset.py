@@ -5,7 +5,7 @@ import pickle
 class SolarSystemDataset(torch.utils.data.Dataset):
     def __init__(self, partition='train',  train_timesteps=14016, val_timesteps=1752, test_timesteps=1752, timestep_pred=1000):
         self.partition = partition
-        solar_system = pickle.load(open('solar/data/solar_system_data.pkl', 'rb'))
+        solar_system = pickle.load(open('/home/snirhordan/channels-wandb/solar/data/solar_system_data.pkl', 'rb'))
         tot_timesteps = solar_system.get_positions().shape[0]
         self.train_timesteps = train_timesteps # 0.8 year of data
         self.val_timesteps = val_timesteps # 0.1 year of data

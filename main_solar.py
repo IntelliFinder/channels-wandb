@@ -15,7 +15,9 @@ from solar.model import EGNN_vel
 sys.modules['base_classes'] = base_classes
 #from tqdm import tqdm
 from tqdm import  tqdm
-
+import os
+path = "/home/snirhordan/channels-wandb/"
+os.chdir(path)
 parser = argparse.ArgumentParser(description='')
 parser.add_argument('--exp_name', type=str, default='exp_1', metavar='N', help='experiment_name')
 parser.add_argument('--batch_size', type=int, default=100, metavar='N',
@@ -67,6 +69,23 @@ parser.add_argument('--test_timesteps', type=int, default=1752, metavar='N')
 parser.add_argument('--eval_test', type=eval, default=False, metavar='N')
 parser.add_argument('--update_vel', type=eval, default=False, metavar='N',
                     help='update velocity at each step')
+
+                    
+parser.add_argument('--color_steps', type=int, default=2, metavar='N',
+                    help='hidden features for edge mlp and messages')
+parser.add_argument('--mp', type=eval, default=False, metavar='N',
+                    help='use edge hidden state message passing')     
+parser.add_argument('--silu', type=eval, default=False, metavar='N',
+                    help='use edge hidden state message passing')               
+parser.add_argument('--ef_dim', type=int, default=3, metavar='N',
+                    help='hidden features for node mlp')
+parser.add_argument('--wl_dim', type=int, default=64, metavar='N',
+                    help='hidden features for node mlp')
+parser.add_argument('--mixed', type=eval, default=False, metavar='N',
+                    help='use edge hidden state message passing')
+parser.add_argument('--shared_wl', type=eval, default=False, metavar='N',
+                    help='use edge hidden state message passing')
+time_exp_dic = {'time': 0, 'counter': 0}
 
 
 time_exp_dic = {'time': 0, 'counter': 0}
@@ -137,10 +156,14 @@ def main():
     #                n_layers=4, coords_weight=1.0,
     #                recurrent=False, norm_diff=False,
     #                tanh=False, num_vectors=1)
+    
+    model = model = EGNN_vel(in_node_nf=1, in_edge_nf=2, hidden_edge_nf=args.hidden, 
+                         hidden_node_nf=args.hidden, hidden_coord_nf=args.hidden,device=device, n_layers=args.n_layers,
+                         recurrent=True, norm_diff=args.norm_diff, tanh=args.tanh, num_vectors=args.num_vectors, update_vel=args.update_vel, ef_dim=args.ef_dim, color_steps=args.color_steps, mixed=args.mixed, shared_wl=args.shared_wl, wl_dim=args.wl_dim)
 
-    model = EGNN_vel(in_node_nf=2, in_edge_nf=1, hidden_edge_nf=args.nf_edge, 
-                        hidden_node_nf=args.nf_node, hidden_coord_nf=args.nf_coord, device=device, n_layers=args.n_layers,
-                        recurrent=True, norm_diff=args.norm_diff, tanh=args.tanh, num_vectors=args.num_vectors, update_vel=args.update_vel)
+    #model = EGNN_vel(in_node_nf=2, in_edge_nf=1, hidden_edge_nf=args.nf_edge, 
+    #                    hidden_node_nf=args.nf_node, hidden_coord_nf=args.nf_coord, device=device, n_layers=args.n_layers,
+    #                    recurrent=True, norm_diff=args.norm_diff, tanh=args.tanh, num_vectors=args.num_vectors, update_vel=args.update_vel)
     model = model.to(device)
     print(model)
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
